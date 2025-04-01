@@ -1252,6 +1252,59 @@ app.get('/api/movimientos', async (req, res) => {
 });
 
 
+// Ruta para actualizar el estatus de un movimiento
+app.put('/api/movimientos/:movimientoId/estatus', async (req, res) => {
+  try {
+    // Verificar autenticación
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No autorizado' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const decodedToken = await admin.auth().verifyIdToken(token);
+    const uid = decodedToken.uid;
+
+    // Obtener el nombre de la empresa desde Firestore
+    const userRef = db.collection('usuarios').doc(uid);
+    const userSnap = await userRef.get();
+
+    if (!userSnap.exists) {
+      return res.status(404).json({ error: 'No se encontraron datos del usuario' });
+    }
+
+    const { empresa } = userSnap.data();
+    const { movimientoId } = req.params;
+    const { estatus } = req.body;
+
+    if (!estatus) {
+      return res.status(400).json({ error: 'El estatus es requerido' });
+    }
+
+    // Referencia al movimiento en Firestore
+    const movimientoRef = db.collection('movimientos').doc(movimientoId);
+    const movimientoSnap = await movimientoRef.get();
+
+    if (!movimientoSnap.exists) {
+      return res.status(404).json({ error: 'Movimiento no encontrado' });
+    }
+
+    const movimientoData = movimientoSnap.data();
+    if (movimientoData.empresa !== empresa) {
+      return res.status(403).json({ error: 'No tienes permiso para modificar este movimiento' });
+    }
+
+    // Actualizar el estatus del movimiento
+    await movimientoRef.update({ estatus, updatedAt: new Date() });
+
+    res.status(200).json({ message: 'Estatus actualizado correctamente' });
+  } catch (error) {
+    console.error('Error al actualizar estatus del movimiento:', error);
+    res.status(500).json({ error: 'Error al procesar la solicitud' });
+  }
+});
+
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Servidor corriendo en el puerto ${PORT}`);
