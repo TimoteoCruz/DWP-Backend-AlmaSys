@@ -11,6 +11,7 @@
   "description": "",
   "dependencies": {
     "@google-cloud/firestore": "^7.11.0",
-    "@grpc/grpc-js": "^1.13.2"
+    "@grpc/grpc-js": "^1.13.2",
+    "express": "^5.1.0"
   }
 }
