@@ -1304,6 +1304,58 @@ app.put('/api/movimientos/:movimientoId/estatus', async (req, res) => {
   }
 });
 
+// Ruta para obtener el estatus de un movimiento específico
+app.get('/api/movimientos/:movimientoId/status', async (req, res) => {
+  try {
+    // Verificar autenticación
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No autorizado' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const decodedToken = await admin.auth().verifyIdToken(token);
+    const uid = decodedToken.uid;
+
+    // Obtener el nombre de la empresa desde Firestore
+    const userRef = db.collection('usuarios').doc(uid);
+    const userSnap = await userRef.get();
+
+    if (!userSnap.exists) {
+      return res.status(404).json({ error: 'No se encontraron datos del usuario' });
+    }
+
+    const { empresa } = userSnap.data();
+    const { movimientoId } = req.params;
+
+    // Obtener el movimiento específico
+    const movimientoRef = db.collection('movimientos').doc(movimientoId);
+    const movimientoSnap = await movimientoRef.get();
+
+    if (!movimientoSnap.exists) {
+      return res.status(404).json({ error: 'Movimiento no encontrado' });
+    }
+
+    const movimientoData = movimientoSnap.data();
+
+    // Verificar que el movimiento pertenezca a la empresa del usuario
+    if (movimientoData.empresa !== empresa) {
+      return res.status(403).json({ error: 'No autorizado para acceder a este movimiento' });
+    }
+
+    // Devolver solo la información de estatus relevante
+    res.status(200).json({
+      id: movimientoId,
+      estatus: movimientoData.estatus || movimientoData.motivo || 'Sin estatus',
+      fechaLlegada: movimientoData.fechaLlegada || null,
+      fechaActualizacion: movimientoData.updatedAt || movimientoData.createdAt
+    });
+
+  } catch (error) {
+    console.error('Error al obtener estatus del movimiento:', error);
+    res.status(500).json({ error: 'Error al procesar la solicitud' });
+  }
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
