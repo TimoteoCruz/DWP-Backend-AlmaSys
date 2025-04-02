@@ -1117,13 +1117,16 @@ app.post('/api/movimientos/nuevo', async (req, res) => {
     const movimientoTipo = tipoMovimiento || 'entrada';
 
     // Obtener el producto en el almacén de salida
-    const productoDoc = await db.collection('productos').doc(productoId).get();
+    const productoDoc = await db.collection('productos')
+      .where('id', '==', productoId)
+      .where('almacenID', '==', almacenSalida) // Verificar si el producto está en el almacén de salida
+      .get();
 
-    if (!productoDoc.exists || productoDoc.data().almacenID !== almacenSalida) {
+    if (productoDoc.empty) {
       return res.status(400).json({ error: 'El producto no está disponible en el almacén de salida' });
     }
 
-    const productoData = productoDoc.data();
+    const productoData = productoDoc.docs[0].data(); // Tomamos el primer producto que coincida
 
     if (productoData.stock < Number(cantidad)) {
       return res.status(400).json({ error: 'Stock insuficiente en el almacén de salida' });
@@ -1173,7 +1176,7 @@ app.post('/api/movimientos/nuevo', async (req, res) => {
       if (nuevoStockSalida < 0) {
         throw new Error('Stock insuficiente para realizar el movimiento');
       }
-      transaction.update(productoDoc.ref, {
+      transaction.update(productoDoc.docs[0].ref, {
         stock: nuevoStockSalida,
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
       });
@@ -1213,6 +1216,7 @@ app.post('/api/movimientos/nuevo', async (req, res) => {
     res.status(500).json({ error: 'Error al procesar la solicitud' });
   }
 });
+
 
 
 // Ruta para obtener historial de movimientos de un producto
