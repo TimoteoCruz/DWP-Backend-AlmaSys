@@ -495,7 +495,6 @@ app.post('/api/almacenes/nuevo', async (req, res) => {
   }
 });
 
-// Ruta para obtener todos los almacenes
 app.get('/api/almacenes', async (req, res) => {
   try {
     // Verificar autenticación
@@ -545,7 +544,6 @@ app.get('/api/almacenes', async (req, res) => {
 });
 
 
-// Ruta para obtener un almacén específico
 app.get('/api/almacenes/:id', async (req, res) => {
   try {
     // Verificar autenticación
@@ -579,7 +577,6 @@ app.get('/api/almacenes/:id', async (req, res) => {
   }
 });
 
-// Ruta para actualizar un almacén
 app.put('/api/almacenes/:id', async (req, res) => {
   try {
     // Verificar autenticación
@@ -659,7 +656,6 @@ app.put('/api/almacenes/:id', async (req, res) => {
   }
 });
 
-// Ruta para eliminar un almacén de la base de datos
 app.delete('/api/almacenes/:id', async (req, res) => {
   try {
     // Verificar autenticación
@@ -709,6 +705,7 @@ app.delete('/api/almacenes/:id', async (req, res) => {
   }
 });
 
+// Endpoint para crear un nuevo producto
 app.post('/api/productos/nuevo', async (req, res) => {
   try {
     // Extraer el token del encabezado de autorización
@@ -741,39 +738,66 @@ app.post('/api/productos/nuevo', async (req, res) => {
       stock,
       codigoSKU,
       fechaRegistro,
+      almacenID,  // ID del almacén seleccionado
     } = req.body;
 
     // Verificar que los campos requeridos no estén vacíos
-    if (!nombreProducto || !categoria || !precio || !stock || !codigoSKU || !fechaRegistro) {
+    if (!nombreProducto || !categoria || !precio || !stock || !codigoSKU || !fechaRegistro || !almacenID) {
       return res.status(400).json({ error: 'Todos los campos son obligatorios' });
     }
 
-    // Crear un nuevo producto con la empresa asociada
+    // Verificar que el almacén exista y pertenezca a la empresa
+    const almacenDoc = await db.collection('almacenes').doc(almacenID).get();
+    
+    if (!almacenDoc.exists) {
+      return res.status(404).json({ error: 'El almacén seleccionado no existe' });
+    }
+    
+    if (almacenDoc.data().empresa !== empresa) {
+      return res.status(403).json({ error: 'No tienes permiso para usar este almacén' });
+    }
+
+    // Crear un nuevo producto con la empresa y almacén asociados
     const nuevoProducto = {
       nombreProducto,
       categoria,
-      precio,
-      stock,
+      precio: Number(precio),
+      stock: Number(stock),
       codigoSKU,
       fechaRegistro,
-      almacenID: "",  // Atributo vacío de almacenID
-      empresa, // Agregar la empresa
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
+      almacenID,  // Guardamos el ID del almacén
+      empresa, 
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdBy: uid
     };
 
     // Guardar en Firestore en la colección "productos"
     const productoRef = await db.collection('productos').add(nuevoProducto);
 
+    // Registrar la actividad
+    await db.collection('actividades').add({
+      tipo: 'creacion_producto',
+      usuarioId: uid,
+      productoId: productoRef.id,
+      almacenId: almacenID,
+      detalles: {
+        nombreProducto,
+        codigoSKU
+      },
+      fecha: admin.firestore.FieldValue.serverTimestamp()
+    });
+
     // Responder con éxito y el ID generado
-    res.status(201).json({ message: 'Producto creado exitosamente', id: productoRef.id });
+    res.status(201).json({ 
+      message: 'Producto creado exitosamente', 
+      id: productoRef.id 
+    });
 
   } catch (error) {
     console.error('Error al crear producto:', error);
     res.status(500).json({ error: 'Error al procesar la solicitud' });
   }
 });
-
-// Ruta para crear una nueva entrada programada
 app.post('/api/programadas/nueva', async (req, res) => {
   try {
     // Extraer el token del encabezado de autorización
@@ -840,7 +864,6 @@ app.post('/api/programadas/nueva', async (req, res) => {
   }
 });
 
-// Ruta para obtener todas las entradas programadas
 app.get('/api/programadas', async (req, res) => {
   try {
     // Verificar autenticación
@@ -893,7 +916,6 @@ app.get('/api/programadas', async (req, res) => {
   }
 });
 
-// Ruta para actualizar una entrada programada
 app.put('/api/programadas/:id', async (req, res) => {
   try {
     // Verificar autenticación
@@ -958,7 +980,6 @@ app.put('/api/programadas/:id', async (req, res) => {
   }
 });
 
-// Ruta para eliminar una entrada programada
 app.delete('/api/programadas/:id', async (req, res) => {
   try {
     // Verificar autenticación
@@ -1089,29 +1110,26 @@ app.post('/api/movimientos/nuevo', async (req, res) => {
       tipoMovimiento
     } = req.body;
 
-    // Verificar que los campos requeridos no estén vacíos
     if (!productoId || !almacenLlegada || !cantidad || !fechaRecepcion || !estatus) {
       return res.status(400).json({ error: 'Todos los campos son obligatorios' });
     }
 
-    // Asegurar que tipoMovimiento tenga un valor predeterminado si no se envía
-    const movimientoTipo = tipoMovimiento || 'entrada';  // Si no se pasa tipoMovimiento, por defecto es 'entrada'
+    const movimientoTipo = tipoMovimiento || 'entrada';
 
-    // Obtener el producto
+    // Obtener el producto en el almacén de salida
     const productoDoc = await db.collection('productos').doc(productoId).get();
-    
-    if (!productoDoc.exists) {
-      return res.status(404).json({ error: 'Producto no encontrado' });
-    }
-    
-    const productoData = productoDoc.data();
-    
-    // Verificar que el producto pertenece a la empresa
-    if (productoData.empresa !== empresa) {
-      return res.status(403).json({ error: 'No tiene acceso a este producto' });
+
+    if (!productoDoc.exists || productoDoc.data().almacenID !== almacenSalida) {
+      return res.status(400).json({ error: 'El producto no está disponible en el almacén de salida' });
     }
 
-    // Obtener el nombre de los almacenes
+    const productoData = productoDoc.data();
+
+    if (productoData.stock < Number(cantidad)) {
+      return res.status(400).json({ error: 'Stock insuficiente en el almacén de salida' });
+    }
+
+    // Obtener los almacenes
     const almacenSalidaDoc = await db.collection('almacenes').doc(almacenSalida).get();
     const almacenLlegadaDoc = await db.collection('almacenes').doc(almacenLlegada).get();
 
@@ -1119,43 +1137,63 @@ app.post('/api/movimientos/nuevo', async (req, res) => {
       return res.status(404).json({ error: 'Almacén no encontrado' });
     }
 
-    const almacenSalidaNombre = almacenSalidaDoc.data().nombreAlmacen;
-    const almacenLlegadaNombre = almacenLlegadaDoc.data().nombreAlmacen;
-
-    // Verificar que ambos almacenes pertenezcan a la empresa
     if (almacenSalidaDoc.data().empresa !== empresa || almacenLlegadaDoc.data().empresa !== empresa) {
       return res.status(403).json({ error: 'No tiene acceso a estos almacenes' });
     }
 
-    // Crear un nuevo registro de movimiento
-    const nuevoMovimiento = {
-      productoId,
-      nombreProducto: productoData.nombreProducto,
-      almacenOrigen: almacenSalidaNombre,  // Guardar el nombre del almacén de salida
-      almacenDestino: almacenLlegadaNombre,  // Guardar el nombre del almacén de llegada
-      cantidad: Number(cantidad),
-      fechaMovimiento: fechaRecepcion,
-      motivo: motivo || 'Traslado de inventario',
-      estatus,  // Guardar el estatus del movimiento
-      tipoMovimiento: movimientoTipo,  // Guardar el tipo de movimiento (entrada)
-      empresa,
-      creadoPor: uid,
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
-    };
+    const almacenSalidaNombre = almacenSalidaDoc.data().nombreAlmacen;
+    const almacenLlegadaNombre = almacenLlegadaDoc.data().nombreAlmacen;
 
-    // Iniciar una transacción para garantizar la consistencia de los datos
     await db.runTransaction(async (transaction) => {
-      // Actualizar el almacén del producto en la colección productos
-      transaction.update(db.collection('productos').doc(productoId), {
-        almacenID: almacenLlegada,
+      const productosRef = db.collection('productos');
+      const productoLlegadaQuery = await productosRef
+        .where('almacenID', '==', almacenLlegada)
+        .where('nombreProducto', '==', productoData.nombreProducto)
+        .where('empresa', '==', empresa)
+        .get();
+
+      if (!productoLlegadaQuery.empty) {
+        const productoExistente = productoLlegadaQuery.docs[0];
+        const nuevoStock = productoExistente.data().stock + Number(cantidad);
+        transaction.update(productoExistente.ref, {
+          stock: nuevoStock,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+      } else {
+        const nuevoProductoRef = db.collection('productos').doc();
+        transaction.set(nuevoProductoRef, {
+          ...productoData,
+          almacenID: almacenLlegada,
+          stock: Number(cantidad),
+          createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+      }
+
+      const nuevoStockSalida = productoData.stock - Number(cantidad);
+      if (nuevoStockSalida < 0) {
+        throw new Error('Stock insuficiente para realizar el movimiento');
+      }
+      transaction.update(productoDoc.ref, {
+        stock: nuevoStockSalida,
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
       });
-      
-      // Registrar el movimiento
+
       const movimientoRef = db.collection('movimientos').doc();
-      transaction.set(movimientoRef, nuevoMovimiento);
-      
-      // Registrar la actividad
+      transaction.set(movimientoRef, {
+        productoId,
+        nombreProducto: productoData.nombreProducto,
+        almacenOrigen: almacenSalidaNombre,
+        almacenDestino: almacenLlegadaNombre,
+        cantidad: Number(cantidad),
+        fechaMovimiento: fechaRecepcion,
+        motivo: motivo || 'Traslado de inventario',
+        estatus,
+        tipoMovimiento: movimientoTipo,
+        empresa,
+        creadoPor: uid,
+        createdAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+
       const actividadRef = db.collection('actividades').doc();
       transaction.set(actividadRef, {
         tipo: 'movimiento_producto',
@@ -1164,15 +1202,12 @@ app.post('/api/movimientos/nuevo', async (req, res) => {
         almacenOrigen: almacenSalidaNombre,
         almacenDestino: almacenLlegadaNombre,
         cantidad: Number(cantidad),
-        estatus,  // Añadir el estatus a la actividad
+        estatus,
         fecha: admin.firestore.FieldValue.serverTimestamp()
       });
     });
 
-    res.status(201).json({ 
-      message: 'Producto movido exitosamente'
-    });
-
+    res.status(201).json({ message: 'Producto movido exitosamente' });
   } catch (error) {
     console.error('Error al mover producto:', error);
     res.status(500).json({ error: 'Error al procesar la solicitud' });
