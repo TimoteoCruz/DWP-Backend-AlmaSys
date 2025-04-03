@@ -1117,16 +1117,13 @@ app.post('/api/movimientos/nuevo', async (req, res) => {
     const movimientoTipo = tipoMovimiento || 'entrada';
 
     // Obtener el producto en el almacén de salida
-    const productoDoc = await db.collection('productos')
-      .where('id', '==', productoId)
-      .where('almacenID', '==', almacenSalida) // Verificar si el producto está en el almacén de salida
-      .get();
+    const productoDoc = await db.collection('productos').doc(productoId).get();
 
-    if (productoDoc.empty) {
+    if (!productoDoc.exists || productoDoc.data().almacenID !== almacenSalida) {
       return res.status(400).json({ error: 'El producto no está disponible en el almacén de salida' });
     }
 
-    const productoData = productoDoc.docs[0].data(); // Tomamos el primer producto que coincida
+    const productoData = productoDoc.data();
 
     if (productoData.stock < Number(cantidad)) {
       return res.status(400).json({ error: 'Stock insuficiente en el almacén de salida' });
@@ -1147,40 +1144,70 @@ app.post('/api/movimientos/nuevo', async (req, res) => {
     const almacenSalidaNombre = almacenSalidaDoc.data().nombreAlmacen;
     const almacenLlegadaNombre = almacenLlegadaDoc.data().nombreAlmacen;
 
+    // Extraer el nombre base del producto (sin el sufijo del almacén)
+    let nombreProductoBase = productoData.nombreProducto;
+    
+    // Si el nombre ya tiene un formato como "Producto - Almacén", extraer solo la parte del producto
+    const nombrePartes = nombreProductoBase.split(' - ');
+    if (nombrePartes.length > 1) {
+      nombreProductoBase = nombrePartes[0];
+    }
+
     await db.runTransaction(async (transaction) => {
       const productosRef = db.collection('productos');
-      const productoLlegadaQuery = await productosRef
+      
+      // Buscar si ya existe el producto en el almacén de destino
+      // Primero intentamos buscar por el nombre base del producto
+      let productoLlegadaQuery = await productosRef
         .where('almacenID', '==', almacenLlegada)
-        .where('nombreProducto', '==', productoData.nombreProducto)
         .where('empresa', '==', empresa)
         .get();
+      
+      // Filtrar localmente para encontrar el producto correspondiente
+      // Esto es más flexible que una consulta exacta
+      let productoExistente = null;
+      productoLlegadaQuery.docs.forEach(doc => {
+        const data = doc.data();
+        const nombreActual = data.nombreProducto;
+        
+        // Verificar si el nombre base coincide con alguna parte del nombre actual
+        if (nombreActual.includes(nombreProductoBase)) {
+          productoExistente = doc;
+        }
+      });
 
-      if (!productoLlegadaQuery.empty) {
-        const productoExistente = productoLlegadaQuery.docs[0];
+      if (productoExistente) {
+        // Si el producto ya existe en el almacén de destino, sumarizar stock
         const nuevoStock = productoExistente.data().stock + Number(cantidad);
         transaction.update(productoExistente.ref, {
           stock: nuevoStock,
           updatedAt: admin.firestore.FieldValue.serverTimestamp()
         });
       } else {
+        // Si no existe, crear nuevo producto en el almacén de destino
         const nuevoProductoRef = db.collection('productos').doc();
+        const nuevoIdentificador = `${nombreProductoBase} - ${almacenLlegadaNombre}`;
         transaction.set(nuevoProductoRef, {
           ...productoData,
+          nombreProducto: nuevoIdentificador,
           almacenID: almacenLlegada,
           stock: Number(cantidad),
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
         });
       }
 
+      // Actualizar stock en almacén de origen
       const nuevoStockSalida = productoData.stock - Number(cantidad);
       if (nuevoStockSalida < 0) {
         throw new Error('Stock insuficiente para realizar el movimiento');
       }
-      transaction.update(productoDoc.docs[0].ref, {
+      transaction.update(productoDoc.ref, {
         stock: nuevoStockSalida,
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
       });
 
+      // Registrar el movimiento
       const movimientoRef = db.collection('movimientos').doc();
       transaction.set(movimientoRef, {
         productoId,
@@ -1197,6 +1224,7 @@ app.post('/api/movimientos/nuevo', async (req, res) => {
         createdAt: admin.firestore.FieldValue.serverTimestamp()
       });
 
+      // Registrar la actividad
       const actividadRef = db.collection('actividades').doc();
       transaction.set(actividadRef, {
         tipo: 'movimiento_producto',
